@@ -1,0 +1,140 @@
+﻿@page "/rm"
+@using Microsoft.AspNetCore.Components.Forms
+@inject HttpClient Http
+
+<h3>RM</h3>
+
+<div class="mb-3">
+    <label class="form-label">Select a .xlsx file</label>
+    <InputFile OnChange="OnInputFileChange" accept=".xlsx" />
+</div>
+
+@if (selectedFile is not null)
+{
+    <div class="mb-3">
+        <strong>Selected:</strong> @selectedFileName<br />
+        <strong>Size:</strong> @FormatBytes(selectedFileSize) <br />
+        <strong>Content type:</strong> @selectedFileContentType
+    </div>
+    <button class="btn btn-primary" @onclick="UploadAsync" disabled="@uploading">Upload</button>
+}
+
+@if (!string.IsNullOrEmpty(statusMessage))
+{
+    <div class="mt-3">
+        <div class="alert @(uploading ? "alert-info" : "alert-secondary")">@statusMessage</div>
+    </div>
+}
+
+@code {
+    private IBrowserFile? selectedFile;
+    private string? selectedFileName;
+    private long selectedFileSize;
+    private string? selectedFileContentType;
+    private bool uploading;
+    private string? statusMessage;
+
+    // Maximum allowed file size for read (50 MB). Adjust if needed.
+    private const long MaxFileSize = 50 * 1024 * 1024;
+
+    // S3 bucket base URL - matches the Angular example
+    private const string BucketUrl = "https://rm-purchase-order-input.s3.ap-south-1.amazonaws.com";
+
+    private void OnInputFileChange(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null)
+        {
+            selectedFile = null;
+            selectedFileName = null;
+            selectedFileSize = 0;
+            selectedFileContentType = null;
+            statusMessage = null;
+            return;
+        }
+
+        // Basic client-side validation for extension
+        if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+        {
+            selectedFile = null;
+            selectedFileName = null;
+            selectedFileSize = 0;
+            selectedFileContentType = null;
+            statusMessage = "Only .xlsx files are allowed.";
+            return;
+        }
+
+        selectedFile = file;
+        selectedFileName = file.Name;
+        selectedFileSize = file.Size;
+        selectedFileContentType = file.ContentType;
+        statusMessage = null;
+    }
+
+    private async Task UploadAsync()
+    {
+        if (selectedFile is null)
+        {
+            statusMessage = "No file selected.";
+            return;
+        }
+
+        if (selectedFileSize > MaxFileSize)
+        {
+            statusMessage = $"File is too large. Maximum allowed is {FormatBytes(MaxFileSize)}.";
+            return;
+        }
+
+        uploading = true;
+        statusMessage = "Uploading...";
+
+        try
+        {
+            var uploadUrl = $"{BucketUrl}/{Uri.EscapeDataString(selectedFileName!)}";
+
+            // Open the browser file stream with the size limit
+            await using var stream = selectedFile.OpenReadStream(MaxFileSize);
+
+            // Create content from the stream
+            using var content = new StreamContent(stream);
+            // Set content type header (fallback to octet-stream if not provided)
+            var contentType = selectedFileContentType ?? "application/octet-stream";
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+
+            // Prepare PUT request (mirrors the Angular example doing a direct PUT to the bucket object URL)
+            using var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl)
+            {
+                Content = content
+            };
+
+            // Send the request. Note: Blazor WebAssembly HttpClient uses the browser fetch API and
+            // does not expose granular progress events like HttpClient in Angular; progress reporting would need JS interop.
+            var response = await Http.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                statusMessage = $"✅ Upload complete to '{uploadUrl}'.";
+            }
+            else
+            {
+                var respText = await response.Content.ReadAsStringAsync();
+                statusMessage = $"Upload failed: {(int)response.StatusCode} {response.ReasonPhrase}. Response: {respText}";
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Upload failed: {ex.Message}";
+        }
+        finally
+        {
+            uploading = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{(bytes / 1024.0):F2} KB";
+        return $"{(bytes / (1024.0 * 1024.0)):F2} MB";
+    }
+}
